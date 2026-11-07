@@ -1,0 +1,35 @@
+{
+  "name": "react-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "start": "vite preview --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist",
+    "lint": "node --check vite.config.js src/services/api.js src/data/mockData.js",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "axios": "^1.21.0",
+    "bootstrap": "^5.3.8",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "react-router-dom": "^7.18.5",
+    "recharts": "^3.10.1",
+    "vite": "^8.3.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "autoprefixer": "^10.4.21",
+    "jsdom": "^31.0.0",
+    "tailwindcss": "^4.3.3",
+    "vitest": "^5.1.0"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "InsureSphere AI",
+  "description": "Enterprise Insurance & Reinsurance Management Platform with AI-Assisted Claims Analysis, Policy RAG, and Treaty Risk-Sharing Analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
