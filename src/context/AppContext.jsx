@@ -28,6 +28,7 @@ import {
   djangoCreateClaim,
   djangoUpdateClaim,
   djangoCreateTreaty,
+  djangoFetchAnalytics,
 } from '../services/api.js';
 import AppContext from './appContextStore.js';
 
@@ -119,6 +120,16 @@ export function AppProvider({ children }) {
     }
     return INITIAL_REINSURANCE_TREATIES;
   });
+  const [liveAnalytics, setLiveAnalytics] = useState(() => {
+    if (initialMode === 'live_django') {
+      try {
+        const cached = localStorage.getItem('insuresphere_live_analytics');
+        if (cached) return JSON.parse(cached);
+      } catch {}
+      return null;
+    }
+    return null;
+  });
   const [apiLogs, setApiLogs] = useState([
     {
       id: 'LOG-101',
@@ -182,7 +193,7 @@ export function AppProvider({ children }) {
         setCurrentUser(sessionResult.user);
         try { localStorage.setItem('insuresphere_live_user', JSON.stringify(sessionResult.user)); } catch {}
 
-        const [liveCustomers, livePolicies, liveTreaties, liveClaims] = await Promise.all([
+        const [liveCustomers, livePolicies, liveTreaties, liveClaims, liveAnalyticsData] = await Promise.all([
           djangoFetchCustomers().catch((err) => {
             console.error('Error fetching live customers:', err);
             return [];
@@ -199,6 +210,12 @@ export function AppProvider({ children }) {
             console.error('Error fetching live claims:', err);
             return [];
           }),
+          sessionResult.user?.role !== 'Customer'
+            ? djangoFetchAnalytics().catch((err) => {
+                console.error('Error fetching live analytics:', err);
+                return null;
+              })
+            : Promise.resolve(null),
         ]);
 
         if (Array.isArray(liveCustomers)) {
@@ -217,6 +234,10 @@ export function AppProvider({ children }) {
         if (Array.isArray(liveClaims)) {
           setClaims(liveClaims);
           try { localStorage.setItem('insuresphere_live_claims', JSON.stringify(liveClaims)); } catch {}
+        }
+        if (liveAnalyticsData) {
+          setLiveAnalytics(liveAnalyticsData);
+          try { localStorage.setItem('insuresphere_live_analytics', JSON.stringify(liveAnalyticsData)); } catch {}
         }
 
         setDjangoStatus({
@@ -315,12 +336,15 @@ export function AppProvider({ children }) {
       await djangoHealthCheck();
       const authData = await djangoLogin(email, password);
 
-      const [liveCurrentUser, liveCustomers, livePolicies, liveTreaties, liveClaims] = await Promise.all([
+      const [liveCurrentUser, liveCustomers, livePolicies, liveTreaties, liveClaims, liveAnalyticsData] = await Promise.all([
         djangoFetchCurrentUser(),
         djangoFetchCustomers().catch(() => []),
         djangoFetchPolicies().catch(() => []),
         djangoFetchTreaties().catch(() => []),
         djangoFetchClaims().catch(() => []),
+        authData?.user?.role !== 'Customer'
+          ? djangoFetchAnalytics().catch(() => null)
+          : Promise.resolve(null),
       ]);
 
       const activeUser = liveCurrentUser || authData?.user;
@@ -344,6 +368,10 @@ export function AppProvider({ children }) {
       if (Array.isArray(liveClaims)) {
         setClaims(liveClaims);
         try { localStorage.setItem('insuresphere_live_claims', JSON.stringify(liveClaims)); } catch {}
+      }
+      if (liveAnalyticsData) {
+        setLiveAnalytics(liveAnalyticsData);
+        try { localStorage.setItem('insuresphere_live_analytics', JSON.stringify(liveAnalyticsData)); } catch {}
       }
 
       setApiMode('live_django');
@@ -391,8 +419,10 @@ export function AppProvider({ children }) {
       localStorage.removeItem('insuresphere_live_policies');
       localStorage.removeItem('insuresphere_live_customers');
       localStorage.removeItem('insuresphere_live_treaties');
+      localStorage.removeItem('insuresphere_live_analytics');
     } catch {}
     setApiMode('demo');
+    setLiveAnalytics(null);
     setCurrentUser(INITIAL_USERS[0]); // Elena Vance
     setCustomers(INITIAL_CUSTOMERS);
     setPolicies(INITIAL_POLICIES);
@@ -413,7 +443,9 @@ export function AppProvider({ children }) {
       localStorage.removeItem('insuresphere_live_policies');
       localStorage.removeItem('insuresphere_live_customers');
       localStorage.removeItem('insuresphere_live_treaties');
+      localStorage.removeItem('insuresphere_live_analytics');
     } catch {}
+    setLiveAnalytics(null);
     setCurrentUser({
       id: 'ANONYMOUS',
       name: 'Logged Out',
@@ -714,19 +746,43 @@ export function AppProvider({ children }) {
     return newClaim;
   };
 
-  const updateClaimStatus = async (claimId, newStatus, reviewerNote) => {
+  const updateClaimStatus = async (claimId, newStatus, reviewerNote, reviewAction) => {
+    let statusVal = newStatus;
+    let noteVal = reviewerNote;
+    let actionVal = reviewAction;
+
+    if (typeof newStatus === 'object' && newStatus !== null) {
+      statusVal = newStatus.status;
+      noteVal = newStatus.reviewerNote;
+      actionVal = newStatus.action;
+    }
+
+    if (!actionVal) {
+      if (statusVal === 'Approved') actionVal = 'Approve';
+      else if (statusVal === 'Pending Review' || statusVal === 'Hold') actionVal = 'Hold';
+      else if (statusVal === 'Rejected') actionVal = 'Reject';
+      else actionVal = statusVal;
+    }
+
+    // Ensure Hold strictly sets 'Pending Review', never 'Approved'
+    if (actionVal === 'Hold' || actionVal === 'hold') {
+      statusVal = 'Pending Review';
+    }
+
     if (apiMode === 'live_django') {
       try {
-        const updated = await djangoUpdateClaim(claimId, {
-          status: newStatus,
-          reviewerNote,
-        });
+        const payload = {
+          action: actionVal,
+          status: statusVal,
+          reviewerNote: noteVal,
+        };
+        const updated = await djangoUpdateClaim(claimId, payload);
         setClaims((prev) => {
           const next = prev.map((c) => (c.id === claimId ? updated : c));
           try { localStorage.setItem('insuresphere_live_claims', JSON.stringify(next)); } catch {}
           return next;
         });
-        logApiCall('PATCH', `/api/claims/${claimId}/`, 200, `Updated claim ${claimId} status to ${newStatus} in PostgreSQL`);
+        logApiCall('PATCH', `/api/claims/${claimId}/`, 200, `Updated claim ${claimId} (${actionVal}: ${statusVal}) in PostgreSQL`);
         return;
       } catch (err) {
         logApiCall('PATCH', `/api/claims/${claimId}/`, err.response?.status || 500, `Live claim update error: ${err.message}`);
@@ -736,20 +792,29 @@ export function AppProvider({ children }) {
     setClaims((prev) =>
       prev.map((c) => {
         if (c.id !== claimId) return c;
+        let actionDesc = `Changed status to "${statusVal}".`;
+        if (actionVal === 'Approve' || statusVal === 'Approved') {
+          actionDesc = 'Approved claim settlement.';
+        } else if (actionVal === 'Hold' || statusVal === 'Pending Review') {
+          actionDesc = 'Held claim for adjuster inquiry.';
+        } else if (actionVal === 'Reject' || statusVal === 'Rejected') {
+          actionDesc = 'Rejected claim.';
+        }
+        const fullAction = noteVal ? `${actionDesc} Note: ${noteVal}` : actionDesc;
         const entry = {
           id: `ACT-${Date.now()}`,
           timestamp: `${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC`,
           actor: `${currentUser.name} (${currentUser.role})`,
-          action: `Changed status to "${newStatus}". ${reviewerNote ? `Note: ${reviewerNote}` : ''}`,
+          action: fullAction,
         };
         return {
           ...c,
-          status: newStatus,
-          activityHistory: [entry, ...c.activityHistory],
+          status: statusVal,
+          activityHistory: [entry, ...(c.activityHistory || [])],
         };
       })
     );
-    logApiCall('PATCH', `/api/claims/${claimId}/`, 200, `Updated claim ${claimId} status to ${newStatus}`);
+    logApiCall('PATCH', `/api/claims/${claimId}/`, 200, `Updated claim ${claimId} (${actionVal}: ${statusVal})`);
   };
 
   // Reinsurance Treaty Management
@@ -757,7 +822,11 @@ export function AppProvider({ children }) {
     if (apiMode === 'live_django') {
       try {
         const created = await djangoCreateTreaty(treatyData);
-        setTreaties((prev) => [created, ...prev]);
+        setTreaties((prev) => {
+          const next = [created, ...prev];
+          try { localStorage.setItem('insuresphere_live_treaties', JSON.stringify(next)); } catch {}
+          return next;
+        });
         logApiCall('POST', '/api/reinsurance/treaties/', 201, `Created treaty ${created.treatyCode} in PostgreSQL`);
         return created;
       } catch (err) {
@@ -792,6 +861,28 @@ export function AppProvider({ children }) {
 
   // Computed KPI Metrics for Dashboard
   const dashboardMetrics = useMemo(() => {
+    // When connected to Live Django and authenticated as Admin/Agent, prioritize PostgreSQL database aggregations
+    if (apiMode === 'live_django' && liveAnalytics) {
+      return {
+        totalCustomers: Number(liveAnalytics.totalCustomers ?? customers.length),
+        activeCustomers: Number(liveAnalytics.activeCustomers ?? customers.filter((c) => c.status === 'Active').length),
+        totalPolicies: Number(liveAnalytics.totalPolicies ?? policies.length),
+        activePolicies: Number(liveAnalytics.activePolicies ?? policies.filter((p) => p.renewalStatus !== 'Expired').length),
+        totalClaims: Number(liveAnalytics.totalClaims ?? claims.length),
+        pendingClaims: Number(liveAnalytics.pendingClaims ?? claims.filter((c) => c.status === 'Pending Review' || c.status === 'SIU Investigation').length),
+        approvedClaims: Number(liveAnalytics.approvedClaims ?? claims.filter((c) => c.status === 'Approved').length),
+        rejectedClaims: Number(liveAnalytics.rejectedClaims ?? claims.filter((c) => c.status === 'Rejected').length),
+        totalPremiumRevenue: Number(liveAnalytics.totalPremiumRevenue ?? policies.reduce((sum, p) => sum + (Number(p.annualPremium) || 0), 0)),
+        totalClaimsVolume: Number(liveAnalytics.totalClaimsVolume ?? claims.reduce((sum, c) => sum + (Number(c.amount) || 0), 0)),
+        totalReinsuranceRecoveries: Number(liveAnalytics.totalReinsuranceRecoveries ?? claims
+          .filter((c) => c.status === 'Approved')
+          .reduce((sum, c) => sum + (Number(c.reinsuranceRecovery) || 0), 0)),
+        lossRatio: Number(liveAnalytics.lossRatio ?? 0.0),
+        activeTreatiesCount: Number(liveAnalytics.activeTreatiesCount ?? treaties.length),
+        portfolioByLob: Array.isArray(liveAnalytics.portfolioByLob) ? liveAnalytics.portfolioByLob : [],
+      };
+    }
+
     const totalCustomers = customers.length;
     const activeCustomers = customers.filter((c) => c.status === 'Active').length;
     const activePolicies = policies.filter((p) => p.renewalStatus !== 'Expired').length;
@@ -804,10 +895,12 @@ export function AppProvider({ children }) {
     const totalReinsuranceRecoveries = claims
       .filter((c) => c.status === 'Approved')
       .reduce((sum, c) => sum + (Number(c.reinsuranceRecovery) || 0), 0);
+    const lossRatio = totalPremiumRevenue > 0 ? Number(((totalClaimsVolume / totalPremiumRevenue) * 100).toFixed(2)) : 0.0;
 
     return {
       totalCustomers,
       activeCustomers,
+      totalPolicies: policies.length,
       activePolicies,
       totalClaims,
       pendingClaims,
@@ -816,8 +909,11 @@ export function AppProvider({ children }) {
       totalPremiumRevenue,
       totalClaimsVolume,
       totalReinsuranceRecoveries,
+      lossRatio,
+      activeTreatiesCount: treaties.length,
+      portfolioByLob: [],
     };
-  }, [customers, policies, claims]);
+  }, [apiMode, liveAnalytics, customers, policies, claims, treaties]);
 
   return (
     <AppContext.Provider

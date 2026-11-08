@@ -142,12 +142,14 @@ export default function ClaimsManagement() {
     }
   };
 
-  const handleDecision = (newStatus) => {
+  const handleDecision = (actionType, newStatus) => {
     if (!selectedClaim) return;
+    const note = reviewerNote.trim();
     updateClaimStatus(
       selectedClaim.id,
       newStatus,
-      reviewerNote.trim() || `Human reviewer (${currentUser.name}) set status to ${newStatus}.`
+      note,
+      actionType
     );
     setReviewerNote('');
   };
@@ -454,21 +456,21 @@ export default function ClaimsManagement() {
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => handleDecision('Approved')}
+                        onClick={() => handleDecision('Approve', 'Approved')}
                         className="rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 transition-colors"
                       >
                         Approve Claim Settlement
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDecision('Pending Review')}
+                        onClick={() => handleDecision('Hold', 'Pending Review')}
                         className="rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 transition-colors"
                       >
                         Hold for Adjuster Inquiry
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDecision('Rejected')}
+                        onClick={() => handleDecision('Reject', 'Rejected')}
                         className="rounded-lg bg-rose-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-800 transition-colors"
                       >
                         Reject Claim

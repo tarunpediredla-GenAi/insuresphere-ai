@@ -61,22 +61,22 @@ class ReinsuranceTreatyViewSet(viewsets.ModelViewSet):
     lookup_field = 'treaty_code'
 
     def get_queryset(self):
-        qs = ReinsuranceTreaty.objects.all()
         user = self.request.user
-        if user.is_authenticated and user.organization_id:
-            qs = qs.filter(organization_id=user.organization_id)
-        return qs
+        if not (user and user.is_authenticated and user.organization_id):
+            return ReinsuranceTreaty.objects.none()
+        return ReinsuranceTreaty.objects.filter(organization_id=user.organization_id)
 
     def perform_create(self, serializer):
-        org = self.request.user.organization
-        if not org:
-            org, _ = Organization.objects.get_or_create(
-                slug='insuresphere-global-syndicate',
-                defaults={'name': 'InsureSphere Global Syndicate', 'naic_company_code': 'NAIC-ISGS-2026'},
-            )
-        next_idx = ReinsuranceTreaty.objects.count() + 1
-        treaty_code = f"TRT-2026-0{next_idx}"
-        serializer.save(treaty_code=treaty_code, organization=org)
+        user = self.request.user
+        if not (user and user.is_authenticated and user.organization):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('User must belong to an active organization.')
+
+        idx = ReinsuranceTreaty.objects.count() + 1
+        while ReinsuranceTreaty.objects.filter(treaty_code=f"TRT-2026-{idx:02d}").exists():
+            idx += 1
+        treaty_code = f"TRT-2026-{idx:02d}"
+        serializer.save(treaty_code=treaty_code, organization=user.organization)
 
     @action(detail=True, methods=['post'], url_path='calculate-cession')
     def calculate_cession(self, request, treaty_code=None):

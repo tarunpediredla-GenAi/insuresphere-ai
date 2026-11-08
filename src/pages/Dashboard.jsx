@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ResponsiveContainer,
@@ -25,6 +25,18 @@ export default function Dashboard() {
     chartTimeframe === '6M'
       ? MONTHLY_REVENUE_CLAIMS_DATA.slice(-6)
       : MONTHLY_REVENUE_CLAIMS_DATA;
+
+  const lobChartData = useMemo(() => {
+    if (dashboardMetrics?.portfolioByLob && dashboardMetrics.portfolioByLob.length > 0) {
+      return dashboardMetrics.portfolioByLob.map((item) => ({
+        line: item.line_of_business,
+        policies: item.policies,
+        premium: item.premium,
+        lossRatio: `${item.lossRatio ?? 0}%`,
+      }));
+    }
+    return PORTFOLIO_BY_LOB;
+  }, [dashboardMetrics?.portfolioByLob]);
 
   const kpiCards = [
     {
@@ -233,7 +245,7 @@ export default function Dashboard() {
 
             <div className="mt-5 h-48 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={PORTFOLIO_BY_LOB} layout="vertical" margin={{ top: 0, right: 12, left: 0, bottom: 0 }}>
+                <BarChart data={lobChartData} layout="vertical" margin={{ top: 0, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
                   <XAxis
                     type="number"
@@ -267,7 +279,7 @@ export default function Dashboard() {
           </div>
 
           <div className="mt-4 border-t border-slate-100 pt-4 space-y-2">
-            {PORTFOLIO_BY_LOB.slice(0, 3).map((item) => (
+            {lobChartData.slice(0, 3).map((item) => (
               <div key={item.line} className="flex items-center justify-between text-xs">
                 <span className="text-slate-700 font-medium truncate">{item.line}</span>
                 <span className="font-mono-num text-slate-500">

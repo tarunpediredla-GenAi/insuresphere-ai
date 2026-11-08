@@ -307,8 +307,12 @@ export async function djangoCreateTreaty(payload) {
   return response.data;
 }
 
-export async function djangoFetchAnalytics() {
-  const response = await djangoApiClient.get('/dashboard/analytics/');
+export async function djangoFetchAnalytics(params = {}) {
+  const query = {};
+  if (params?.startDate) query.start_date = params.startDate;
+  if (params?.endDate) query.end_date = params.endDate;
+  const config = Object.keys(query).length > 0 ? { params: query } : undefined;
+  const response = await djangoApiClient.get('/dashboard/analytics/', config);
   return response.data;
 }
 

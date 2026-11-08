@@ -43,6 +43,7 @@ class ClaimSerializer(serializers.ModelSerializer):
     supportingDocs = SupportingDocumentSerializer(source='supporting_docs', many=True, required=False)
     activityHistory = ClaimActivityLogSerializer(source='activity_logs', many=True, read_only=True)
     reviewerNote = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    action = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = Claim
@@ -66,8 +67,27 @@ class ClaimSerializer(serializers.ModelSerializer):
             'supportingDocs',
             'activityHistory',
             'reviewerNote',
+            'action',
         )
         read_only_fields = ('deductible', 'priority')
+
+    def to_internal_value(self, data):
+        # Normalize status if caller passed 'Hold' or variations
+        if 'status' in data and isinstance(data['status'], str):
+            status_val = data['status'].strip()
+            if status_val.lower() in ('hold', 'pending review', 'pending', 'hold for inquiry', 'hold for adjuster inquiry'):
+                data = data.copy() if hasattr(data, 'copy') else dict(data)
+                data['status'] = Claim.Status.PENDING
+            elif status_val.lower() in ('approve', 'approved'):
+                data = data.copy() if hasattr(data, 'copy') else dict(data)
+                data['status'] = Claim.Status.APPROVED
+            elif status_val.lower() in ('reject', 'rejected'):
+                data = data.copy() if hasattr(data, 'copy') else dict(data)
+                data['status'] = Claim.Status.REJECTED
+            elif status_val.lower() in ('siu', 'siu investigation'):
+                data = data.copy() if hasattr(data, 'copy') else dict(data)
+                data['status'] = Claim.Status.SIU
+        return super().to_internal_value(data)
 
     def get_assignedAdjuster(self, obj):
         return obj.assigned_adjuster.name if obj.assigned_adjuster else 'Marcus Sterling'
@@ -101,6 +121,7 @@ class ClaimViewSet(viewsets.ModelViewSet):
         policy_code = serializer.validated_data.pop('policyId', None)
         docs_data = serializer.validated_data.pop('supporting_docs', [])
         serializer.validated_data.pop('reviewerNote', None)
+        serializer.validated_data.pop('action', None)
 
         policy = None
         if policy_code:
@@ -146,11 +167,54 @@ class ClaimViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         user = self.request.user
         if user.role not in ('Admin', 'Agent'):
-            raise PermissionDenied('Only Admin or Licensed Insurance Adjusters can approve or reject claims.')
-        reviewer_note = serializer.validated_data.pop('reviewerNote', '')
+            raise PermissionDenied('Only Admin or Licensed Insurance Adjusters can approve, hold, or reject claims.')
+
+        reviewer_note = (serializer.validated_data.pop('reviewerNote', None) or '').strip()
+        review_action = (serializer.validated_data.pop('action', None) or '').strip()
+
+        # Enforce distinct, correct actions and backend-supported review statuses:
+        # 1. Approve -> Claim.Status.APPROVED ('Approved')
+        # 2. Hold -> Claim.Status.PENDING ('Pending Review') - NEVER 'Approved'
+        # 3. Reject -> Claim.Status.REJECTED ('Rejected')
+        if review_action:
+            action_lower = review_action.lower()
+            if action_lower in ('approve', 'approved'):
+                serializer.validated_data['status'] = Claim.Status.APPROVED
+                action_desc = 'Approved claim settlement.'
+            elif action_lower in ('hold', 'hold for inquiry', 'hold for adjuster inquiry', 'pending review', 'pending'):
+                serializer.validated_data['status'] = Claim.Status.PENDING
+                action_desc = 'Held claim for adjuster inquiry.'
+            elif action_lower in ('reject', 'rejected'):
+                serializer.validated_data['status'] = Claim.Status.REJECTED
+                action_desc = 'Rejected claim.'
+            else:
+                action_desc = f'Action "{review_action}" recorded.'
+        else:
+            new_status = serializer.validated_data.get('status')
+            if new_status == Claim.Status.APPROVED:
+                action_desc = 'Approved claim settlement.'
+            elif new_status == Claim.Status.PENDING:
+                action_desc = 'Held claim for adjuster inquiry.'
+            elif new_status == Claim.Status.REJECTED:
+                action_desc = 'Rejected claim.'
+            elif new_status == Claim.Status.SIU:
+                action_desc = 'Escalated claim to SIU Investigation.'
+            elif new_status:
+                action_desc = f'Changed status to "{new_status}".'
+            else:
+                action_desc = 'Updated claim details.'
+
         claim = serializer.save()
+
+        # Construct clear audit log action; preserve history (never delete or overwrite)
+        # Settlements/payments are not auto-triggered
+        if reviewer_note:
+            log_action = f"{action_desc} Note: {reviewer_note}"
+        else:
+            log_action = action_desc
+
         ClaimActivityLog.objects.create(
             claim=claim,
             actor=f"{user.name} ({user.role})",
-            action=f'Changed status to "{claim.status}". {reviewer_note}',
+            action=log_action,
         )
