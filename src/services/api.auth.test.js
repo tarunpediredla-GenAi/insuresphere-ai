@@ -19,12 +19,15 @@ describe('Authentication & Session Restoration Services', () => {
     vi.restoreAllMocks();
   });
 
-  it('stores access token in sessionStorage and removes any refresh token from localStorage', () => {
+  it('stores access token in memory + sessionStorage only, never in localStorage', () => {
     localStorage.setItem('insuresphere_live_jwt_refresh', 'stale_refresh_token');
     setAccessToken('mock_access_token_123');
 
     expect(getAccessToken()).toBe('mock_access_token_123');
+    // sessionStorage is the tab-scoped reload bridge
     expect(sessionStorage.getItem('insuresphere_live_jwt_access')).toBe('mock_access_token_123');
+    // The access token must NEVER be persisted in localStorage
+    expect(localStorage.getItem('insuresphere_live_jwt_access')).toBeNull();
     // Ensure long-lived refresh tokens are NEVER stored or left in localStorage
     expect(localStorage.getItem('insuresphere_live_jwt_refresh')).toBeNull();
   });
@@ -35,7 +38,24 @@ describe('Authentication & Session Restoration Services', () => {
 
     expect(getAccessToken()).toBe('');
     expect(sessionStorage.getItem('insuresphere_live_jwt_access')).toBeNull();
+    expect(localStorage.getItem('insuresphere_live_jwt_access')).toBeNull();
     expect(localStorage.getItem('insuresphere_live_jwt_refresh')).toBeNull();
+  });
+
+  it('ignores and purges a legacy access token persisted in localStorage by older builds', () => {
+    // Simulate a token written to localStorage before the storage hardening
+    localStorage.setItem('insuresphere_live_jwt_access', 'legacy_persisted_token');
+
+    // getAccessToken must not resurrect a localStorage-only token
+    expect(getAccessToken()).toBe('');
+
+    // The next setAccessToken actively purges the stale localStorage copy
+    setAccessToken('fresh_access_token');
+    expect(localStorage.getItem('insuresphere_live_jwt_access')).toBeNull();
+    expect(getAccessToken()).toBe('fresh_access_token');
+    expect(sessionStorage.getItem('insuresphere_live_jwt_access')).toBe('fresh_access_token');
+
+    clearAuthTokens();
   });
 
   it('restores session from valid access token', async () => {

@@ -35,27 +35,47 @@ export function setStoredDjangoUrl(url) {
   djangoApiClient.defaults.baseURL = cleaned.includes('localhost:8000/api') || cleaned.includes('127.0.0.1:8000/api') ? '/api' : cleaned;
 }
 
-// Token storage helpers (only short-lived access token in sessionStorage & localStorage; never refresh tokens or passwords in localStorage)
+// Token storage helpers — hardened storage contract:
+// - Primary store is a module-level in-memory variable only (never written to disk).
+// - sessionStorage mirrors it purely as a reload bridge: it is tab-scoped and is
+//   cleared automatically when the tab closes, so a page reload can recover the
+//   token into memory without persisting it beyond the tab's lifetime.
+// - The access token is NEVER written to localStorage: localStorage survives
+//   browser restarts and is readable by any script running on the origin.
+// - Stale token copies persisted by older builds are actively purged below.
+// - The long-lived refresh token lives only in the HttpOnly cookie set by Django;
+//   the frontend never stores it anywhere.
+let inMemoryAccessToken = '';
+
 export function getAccessToken() {
-  return (
-    sessionStorage.getItem('insuresphere_live_jwt_access') ||
-    localStorage.getItem('insuresphere_live_jwt_access') ||
-    ''
-  );
+  if (inMemoryAccessToken) {
+    return inMemoryAccessToken;
+  }
+  // Reload bridge: after a page reload the in-memory variable is empty, so
+  // recover the tab-scoped copy from sessionStorage back into memory.
+  const tabToken = sessionStorage.getItem('insuresphere_live_jwt_access');
+  if (tabToken) {
+    inMemoryAccessToken = tabToken;
+    return inMemoryAccessToken;
+  }
+  return '';
 }
 
 export function setAccessToken(token) {
   if (token) {
+    inMemoryAccessToken = token;
     sessionStorage.setItem('insuresphere_live_jwt_access', token);
-    localStorage.setItem('insuresphere_live_jwt_access', token);
-    localStorage.removeItem('insuresphere_live_jwt_refresh'); // Clean up any stale refresh token
   } else {
+    inMemoryAccessToken = '';
     sessionStorage.removeItem('insuresphere_live_jwt_access');
-    localStorage.removeItem('insuresphere_live_jwt_access');
   }
+  // Migration cleanup: purge any tokens an older build persisted in localStorage.
+  localStorage.removeItem('insuresphere_live_jwt_access');
+  localStorage.removeItem('insuresphere_live_jwt_refresh');
 }
 
 export function clearAuthTokens() {
+  inMemoryAccessToken = '';
   sessionStorage.removeItem('insuresphere_live_jwt_access');
   localStorage.removeItem('insuresphere_live_jwt_access');
   localStorage.removeItem('insuresphere_live_jwt_refresh');
