@@ -1,8 +1,11 @@
 """Serializers and ViewSet for Claims Management (/api/claims/)."""
 
 import random
-from rest_framework import serializers, viewsets, permissions
-from rest_framework.exceptions import PermissionDenied
+from decimal import Decimal, InvalidOperation
+from rest_framework import serializers, viewsets, permissions, status
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.response import Response
 from accounts.permissions import IsOrganizationMember
 from policies.models import Policy
 from .models import Claim, SupportingDocument, ClaimActivityLog
@@ -39,6 +42,9 @@ class ClaimSerializer(serializers.ModelSerializer):
     submittedDate = serializers.DateField(source='submitted_date', read_only=True)
     amount = serializers.FloatField(source='gross_amount', required=False)
     reinsuranceRecovery = serializers.FloatField(source='reinsurance_recovery', read_only=True)
+    recoveryStage = serializers.CharField(source='recovery_stage', read_only=True)
+    recoveryBilledAmount = serializers.FloatField(source='recovery_billed_amount', read_only=True)
+    recoveryCollectedAmount = serializers.FloatField(source='recovery_collected_amount', read_only=True)
     assignedAdjuster = serializers.SerializerMethodField()
     supportingDocs = SupportingDocumentSerializer(source='supporting_docs', many=True, required=False)
     activityHistory = ClaimActivityLogSerializer(source='activity_logs', many=True, read_only=True)
@@ -60,6 +66,9 @@ class ClaimSerializer(serializers.ModelSerializer):
             'amount',
             'deductible',
             'reinsuranceRecovery',
+            'recoveryStage',
+            'recoveryBilledAmount',
+            'recoveryCollectedAmount',
             'status',
             'priority',
             'assignedAdjuster',
@@ -99,6 +108,24 @@ class ClaimSerializer(serializers.ModelSerializer):
         return rep
 
 
+def generate_unique_claim_number():
+    """Collision-safe claim number generation.
+
+    The previous ``CLM-2026-{random 8900-9999}`` scheme could collide with
+    the unique constraint on ``claim_number``. Try random candidates first
+    (preserving the existing number shape), checking existence each time;
+    fall back to a deterministic scan above the random range.
+    """
+    for _ in range(100):
+        candidate = f"CLM-2026-{random.randint(8900, 9999)}"
+        if not Claim.objects.filter(claim_number=candidate).exists():
+            return candidate
+    suffix = 10000
+    while Claim.objects.filter(claim_number=f"CLM-2026-{suffix}").exists():
+        suffix += 1
+    return f"CLM-2026-{suffix}"
+
+
 class ClaimViewSet(viewsets.ModelViewSet):
     serializer_class = ClaimSerializer
     permission_classes = (permissions.IsAuthenticated, IsOrganizationMember)
@@ -123,20 +150,33 @@ class ClaimViewSet(viewsets.ModelViewSet):
         serializer.validated_data.pop('reviewerNote', None)
         serializer.validated_data.pop('action', None)
 
-        policy = None
+        # Organization isolation: the policy MUST belong to the requesting
+        # user's organization. Never fall back to another tenant's policy.
+        organization_id = self.request.user.organization_id
+        if not organization_id:
+            raise ValidationError({'policyId': 'Your account is not assigned to an organization.'})
         if policy_code:
-            policy = Policy.objects.filter(policy_number=policy_code).first()
-        if not policy and self.request.user.organization_id:
-            policy = Policy.objects.filter(organization_id=self.request.user.organization_id).first()
-        if not policy:
-            policy = Policy.objects.first()
+            policy = Policy.objects.filter(
+                policy_number=policy_code,
+                organization_id=organization_id,
+            ).first()
+            if policy is None:
+                raise ValidationError(
+                    {'policyId': f'Policy {policy_code} was not found in your organization.'}
+                )
+        else:
+            policy = Policy.objects.filter(organization_id=organization_id).first()
+            if policy is None:
+                raise ValidationError(
+                    {'policyId': 'No policy exists in your organization to attach this claim to.'}
+                )
         gross_amount = float(serializer.validated_data.get('gross_amount', 85000))
         deductible = float(policy.deductible)
         net_eligible = max(0.0, gross_amount - deductible)
         ceded_pct = float(policy.ceded_percentage) / 100.0
         reinsurance_recovery = round(net_eligible * ceded_pct, 2)
 
-        claim_number = f"CLM-2026-{random.randint(8900, 9999)}"
+        claim_number = generate_unique_claim_number()
         priority = 'Critical' if gross_amount >= 250000 else 'High' if gross_amount >= 100000 else 'Medium'
 
         claim = serializer.save(
@@ -145,6 +185,11 @@ class ClaimViewSet(viewsets.ModelViewSet):
             policy=policy,
             deductible=deductible,
             reinsurance_recovery=reinsurance_recovery,
+            # A new claim's recovery is an estimate only — nothing has been
+            # approved, billed, or collected yet.
+            recovery_stage=Claim.RecoveryStage.ESTIMATED,
+            recovery_billed_amount=Decimal('0.00'),
+            recovery_collected_amount=Decimal('0.00'),
             priority=priority,
         )
 
@@ -206,6 +251,17 @@ class ClaimViewSet(viewsets.ModelViewSet):
 
         claim = serializer.save()
 
+        # Recovery stage sync: approval advances the (still unpaid) recovery
+        # from Estimated to Approved. Rejection grants no approval, so the
+        # recovery stays an estimate — the estimated amount is preserved, and
+        # claim approval/rejection alone never bills or collects money.
+        if claim.status == Claim.Status.APPROVED and claim.recovery_stage == Claim.RecoveryStage.ESTIMATED:
+            claim.recovery_stage = Claim.RecoveryStage.APPROVED
+            claim.save(update_fields=['recovery_stage'])
+        elif claim.status == Claim.Status.REJECTED and claim.recovery_stage == Claim.RecoveryStage.APPROVED:
+            claim.recovery_stage = Claim.RecoveryStage.ESTIMATED
+            claim.save(update_fields=['recovery_stage'])
+
         # Construct clear audit log action; preserve history (never delete or overwrite)
         # Settlements/payments are not auto-triggered
         if reviewer_note:
@@ -218,3 +274,81 @@ class ClaimViewSet(viewsets.ModelViewSet):
             actor=f"{user.name} ({user.role})",
             action=log_action,
         )
+
+    @action(detail=True, methods=['post'], url_path='recovery')
+    def recovery(self, request, claim_number=None):
+        """POST /api/claims/{claim_number}/recovery/ — advance the reinsurance
+        recovery stage for an Approved claim.
+
+        Body: ``{"stage": "Billed"|"Collected", "amount": <number>}``.
+        Admin/Agent only. Stages progress strictly
+        Estimated -> Approved -> Billed -> Collected (no skipping, no going
+        backwards), and amounts obey collected <= billed <= the claim's
+        estimated reinsurance recovery. Each transition is audit-logged.
+        """
+        user = request.user
+        if user.role not in ('Admin', 'Agent'):
+            raise PermissionDenied('Only Admin or Licensed Insurance Adjusters can record reinsurance recoveries.')
+
+        claim = self.get_object()  # queryset is already organization-scoped
+
+        target_stage = str(request.data.get('stage', '')).strip()
+        if target_stage not in (Claim.RecoveryStage.BILLED, Claim.RecoveryStage.COLLECTED):
+            raise ValidationError({'stage': "Stage must be 'Billed' or 'Collected'."})
+
+        if claim.status != Claim.Status.APPROVED:
+            raise ValidationError({'stage': 'Recoveries can only be billed or collected on an Approved claim.'})
+
+        # Strict progression: Billed only from Approved, Collected only from Billed.
+        required_current = (
+            Claim.RecoveryStage.APPROVED
+            if target_stage == Claim.RecoveryStage.BILLED
+            else Claim.RecoveryStage.BILLED
+        )
+        if claim.recovery_stage != required_current:
+            raise ValidationError(
+                {
+                    'stage': (
+                        f'Cannot move recovery from {claim.recovery_stage} to {target_stage}; '
+                        'stages progress Estimated -> Approved -> Billed -> Collected without skipping.'
+                    )
+                }
+            )
+
+        raw_amount = request.data.get('amount')
+        if raw_amount is None:
+            raise ValidationError({'amount': 'An amount is required for this recovery stage.'})
+        try:
+            amount = Decimal(str(raw_amount))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValidationError({'amount': 'Amount must be a valid number.'})
+        if amount < 0:
+            raise ValidationError({'amount': 'Amount cannot be negative.'})
+
+        if target_stage == Claim.RecoveryStage.BILLED:
+            if amount > claim.reinsurance_recovery:
+                raise ValidationError(
+                    {'amount': 'Billed amount cannot exceed the estimated reinsurance recovery.'}
+                )
+            claim.recovery_billed_amount = amount
+            update_fields = ['recovery_stage', 'recovery_billed_amount']
+            action_desc = f"Billed reinsurance recovery of ${amount:,.2f} to reinsurer."
+        else:  # Collected
+            if amount > claim.recovery_billed_amount:
+                raise ValidationError(
+                    {'amount': 'Collected amount cannot exceed the billed recovery amount.'}
+                )
+            claim.recovery_collected_amount = amount
+            update_fields = ['recovery_stage', 'recovery_collected_amount']
+            action_desc = f"Collected reinsurance recovery of ${amount:,.2f} from reinsurer."
+
+        claim.recovery_stage = target_stage
+        claim.save(update_fields=update_fields)
+
+        ClaimActivityLog.objects.create(
+            claim=claim,
+            actor=f"{user.name} ({user.role})",
+            action=action_desc,
+        )
+
+        return Response(self.get_serializer(claim).data, status=status.HTTP_200_OK)
