@@ -18,25 +18,45 @@ import { MONTHLY_REVENUE_CLAIMS_DATA, PORTFOLIO_BY_LOB } from '../data/mockData.
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { dashboardMetrics, claims, policies, currentUser } = useApp();
+  const { dashboardMetrics, claims, policies, currentUser, apiMode } = useApp();
   const [chartTimeframe, setChartTimeframe] = useState('YTD');
+  const isLive = apiMode === 'live_django';
 
+  // Monthly revenue / claims series only exists as demo data — it is never
+  // shown in Live mode (see chart section below).
   const chartData =
     chartTimeframe === '6M'
       ? MONTHLY_REVENUE_CLAIMS_DATA.slice(-6)
       : MONTHLY_REVENUE_CLAIMS_DATA;
 
   const lobChartData = useMemo(() => {
-    if (dashboardMetrics?.portfolioByLob && dashboardMetrics.portfolioByLob.length > 0) {
-      return dashboardMetrics.portfolioByLob.map((item) => ({
-        line: item.line_of_business,
+    const liveLob = dashboardMetrics?.portfolioByLob;
+    if (isLive) {
+      // Live mode: build ONLY from authenticated API analytics. Never fall
+      // back to mock PORTFOLIO_BY_LOB data.
+      return (liveLob || []).map((item) => ({
+        line: item.line_of_business || item.line,
         policies: item.policies,
         premium: item.premium,
-        lossRatio: `${item.lossRatio ?? 0}%`,
+        lossRatio:
+          typeof item.lossRatio === 'string' && item.lossRatio.includes('%')
+            ? item.lossRatio
+            : `${item.lossRatio ?? 0}%`,
+      }));
+    }
+    if (liveLob && liveLob.length > 0) {
+      return liveLob.map((item) => ({
+        line: item.line_of_business || item.line,
+        policies: item.policies,
+        premium: item.premium,
+        lossRatio:
+          typeof item.lossRatio === 'string' && item.lossRatio.includes('%')
+            ? item.lossRatio
+            : `${item.lossRatio ?? 0}%`,
       }));
     }
     return PORTFOLIO_BY_LOB;
-  }, [dashboardMetrics?.portfolioByLob]);
+  }, [dashboardMetrics?.portfolioByLob, isLive]);
 
   const kpiCards = [
     {
@@ -66,7 +86,11 @@ export default function Dashboard() {
     {
       label: 'Approved Claims',
       value: dashboardMetrics.approvedClaims.toString(),
-      subtext: `$${(dashboardMetrics.totalReinsuranceRecoveries / 1000).toFixed(1)}k treaty recovery linked`,
+      // In Live mode the recovery figure is an approved estimate only — it has
+      // not been billed to or collected from the reinsurer yet.
+      subtext: isLive
+        ? `Approved Recoveries (est.): $${(dashboardMetrics.totalReinsuranceRecoveries / 1000).toFixed(1)}k · Not yet billed/collected`
+        : `$${(dashboardMetrics.totalReinsuranceRecoveries / 1000).toFixed(1)}k treaty recovery linked`,
       actionPath: '/claims',
     },
     {
@@ -152,6 +176,7 @@ export default function Dashboard() {
                 Monthly cashflow performance ($ USD) · Endpoint: GET /api/dashboard/analytics/
               </p>
             </div>
+            {!isLive && (
             <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 self-start">
               {['6M', 'YTD'].map((tf) => (
                 <button
@@ -168,8 +193,18 @@ export default function Dashboard() {
                 </button>
               ))}
             </div>
+            )}
           </div>
 
+          {isLive ? (
+            <div className="flex h-72 w-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 px-6 text-center">
+              <p className="max-w-md text-xs leading-relaxed text-slate-500">
+                Monthly trend is not yet provided by the API. GET /api/dashboard/analytics/ returns
+                portfolio totals and line-of-business breakdowns, but no monthly premium / claims
+                time series — so no chart is shown in Live mode instead of displaying demo data.
+              </p>
+            </div>
+          ) : (
           <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -231,6 +266,7 @@ export default function Dashboard() {
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          )}
         </div>
 
         {/* Line of Business Exposure & Loss Ratio */}
@@ -276,6 +312,11 @@ export default function Dashboard() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            {isLive && lobChartData.length === 0 && (
+              <p className="mt-3 text-xs text-slate-500">
+                No line-of-business data returned by the API for this organization yet.
+              </p>
+            )}
           </div>
 
           <div className="mt-4 border-t border-slate-100 pt-4 space-y-2">
