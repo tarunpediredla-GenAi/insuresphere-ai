@@ -37,6 +37,17 @@ def _gemini_api_key():
     return None
 
 
+def _gemini_model():
+    """Gemini model for AI calls, overridable via GEMINI_MODEL env.
+
+    Default is gemini-3.5-flash-lite: gemini-2.5-flash was deprecated on
+    2026-11-02 (access limited to prior users; requests auto-route to
+    3.5-flash-lite from 2026-12-01), so new API keys must use a current
+    model. Set GEMINI_MODEL=gemini-3.8-flash for the stronger model.
+    """
+    return os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
+
+
 def _call_gemini_json(api_key, prompt):
     """Call Gemini expecting JSON. Returns parsed dict. Raises on failure."""
     from google import genai
@@ -44,7 +55,7 @@ def _call_gemini_json(api_key, prompt):
 
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model=_gemini_model(),
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=(
@@ -67,7 +78,7 @@ def _call_gemini_text(api_key, prompt):
 
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model=_gemini_model(),
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=(
