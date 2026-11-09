@@ -7,5 +7,8 @@ psycopg[binary]==3.2.4
 python-dotenv==1.0.1
 google-genai==1.5.0
 gunicorn==23.0.0
+whitenoise==6.8.2
+django-storages==1.14.6
+boto3==1.35.99
 pypdf
 python-docx

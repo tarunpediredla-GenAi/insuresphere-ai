@@ -4,7 +4,9 @@ Seeds PostgreSQL with the Organization, Admin/Agent/Customer users, Customers,
 Reinsurance Treaties, Bound Policies, and Claims with Supporting Docs & Audit Logs.
 """
 
+import os
 from datetime import date
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from accounts.models import Organization, User
@@ -19,6 +21,22 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        # Safety gate: the demo accounts below use publicly known passwords
+        # (they are printed in this project's README/demo docs). They must
+        # NEVER be created in a staging/production (non-DEBUG) environment.
+        # Local development (DEBUG=True) is unaffected. An explicit
+        # INSURESPHERE_ALLOW_DEMO_SEED=true is the only non-DEBUG escape
+        # hatch, intended for throwaway demo environments only.
+        if not settings.DEBUG and os.getenv('INSURESPHERE_ALLOW_DEMO_SEED') != 'true':
+            self.stderr.write(self.style.ERROR(
+                'Refusing to seed demo accounts in a non-DEBUG environment: '
+                'the demo logins use publicly known credentials and must not '
+                'exist in staging/production. Nothing was created. '
+                'Set INSURESPHERE_ALLOW_DEMO_SEED=true only for a throwaway '
+                'demo environment if you explicitly accept that risk.'
+            ))
+            return
+
         self.stdout.write('Seeding InsureSphere AI PostgreSQL database...')
 
         org, _ = Organization.objects.get_or_create(
