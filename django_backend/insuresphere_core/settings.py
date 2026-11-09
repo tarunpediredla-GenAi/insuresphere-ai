@@ -6,15 +6,20 @@ Configured for PostgreSQL, Django REST Framework (DRF), SimpleJWT, and Organizat
 import os
 from pathlib import Path
 from datetime import timedelta
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Built-in development-only fallback. Production MUST set DJANGO_SECRET_KEY
+# to a unique, secret value — startup refuses the dev default when DEBUG=False.
+DEV_DEFAULT_SECRET_KEY = 'django-insecure-insuresphere-dev-key-change-in-production-2026'
+
 SECRET_KEY = os.getenv(
     'DJANGO_SECRET_KEY',
-    'django-insecure-insuresphere-dev-key-change-in-production-2026'
+    DEV_DEFAULT_SECRET_KEY
 )
 
 DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
@@ -157,3 +162,30 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# ---------------------------------------------------------------------------
+# Production Security Hardening (active only when DEBUG is False)
+#
+# Required production environment variables:
+#   DJANGO_DEBUG=False                 — enables this hardening block
+#   DJANGO_SECRET_KEY=<unique secret>  — REQUIRED; startup fails if the
+#                                        built-in dev default is still in use
+#   DJANGO_ALLOWED_HOSTS=<hostnames>   — comma-separated public hostnames
+# Optional:
+#   DJANGO_SECURE_SSL_REDIRECT=True    — redirect all HTTP to HTTPS
+#                                        (set to False only behind a proxy
+#                                        that already terminates/redirects TLS)
+# Local development (DJANGO_DEBUG=True, the default) is unchanged.
+# ---------------------------------------------------------------------------
+if not DEBUG:
+    if SECRET_KEY == DEV_DEFAULT_SECRET_KEY:
+        raise ImproperlyConfigured(
+            'DJANGO_SECRET_KEY must be set to a unique secret value in production; '
+            'the built-in development default is not allowed when DEBUG=False.'
+        )
+    SECURE_SSL_REDIRECT = os.getenv('DJANGO_SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1', 'yes')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    X_FRAME_OPTIONS = 'DENY'

@@ -2,6 +2,7 @@
 Authentication & User Profile API Views for InsureSphere AI.
 """
 
+from django.conf import settings
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -27,7 +28,9 @@ def set_refresh_cookie(response, refresh_token):
         max_age=REFRESH_COOKIE_MAX_AGE,
         httponly=True,
         samesite='Lax',
-        secure=False,  # Set to True in production HTTPS environments
+        # Secure on HTTPS (production, DEBUG=False); plain HTTP local dev
+        # (DEBUG=True) keeps working without the Secure flag.
+        secure=not settings.DEBUG,
         path='/',
     )
 
@@ -50,7 +53,9 @@ class InsureSphereLoginView(TokenObtainPairView):
 
 
 class UserRegistrationAPIView(generics.CreateAPIView):
-    """POST /api/auth/register/ — Registers a new Customer, Agent, or Admin account."""
+    """POST /api/auth/register/ — Public registration always creates a Customer
+    account (client-supplied roles are ignored). Only an authenticated Admin
+    using this endpoint may create Admin/Agent accounts."""
     permission_classes = (permissions.AllowAny,)
     serializer_class = UserRegistrationSerializer
 

@@ -39,7 +39,12 @@ class DashboardAnalyticsAPIView(APIView):
                     'rejectedClaims': 0,
                     'totalPremiumRevenue': 0.0,
                     'totalClaimsVolume': 0.0,
+                    'incurredClaimsVolume': 0.0,
                     'totalReinsuranceRecoveries': 0.0,
+                    'estimatedRecoveries': 0.0,
+                    'approvedRecoveries': 0.0,
+                    'billedRecoveries': 0.0,
+                    'collectedRecoveries': 0.0,
                     'lossRatio': 0.0,
                     'activeTreatiesCount': 0,
                     'portfolioByLob': [],
@@ -83,14 +88,31 @@ class DashboardAnalyticsAPIView(APIView):
             approved_claims=Count('id', filter=Q(status='Approved')),
             rejected_claims=Count('id', filter=Q(status='Rejected')),
             total_claims_volume=Sum('gross_amount'),
+            # Incurred claims EXCLUDE Rejected claims (they are not incurred):
+            # incurred = Pending Review + SIU Investigation + Approved gross.
+            incurred_claims_volume=Sum(
+                'gross_amount',
+                filter=Q(status__in=['Pending Review', 'SIU Investigation', 'Approved']),
+            ),
             total_reinsurance_recoveries=Sum('reinsurance_recovery', filter=Q(status='Approved')),
+            # Recovery stages — Pending/SIU recoveries are only *estimates* and
+            # must never be presented as settled/collected money.
+            estimated_recoveries=Sum(
+                'reinsurance_recovery',
+                filter=Q(status__in=['Pending Review', 'SIU Investigation']),
+            ),
+            approved_recoveries=Sum('reinsurance_recovery', filter=Q(status='Approved')),
+            billed_recoveries=Sum('recovery_billed_amount', filter=Q(status='Approved')),
+            collected_recoveries=Sum('recovery_collected_amount', filter=Q(status='Approved')),
         )
 
         premium_agg = policies_qs.aggregate(total_premium_revenue=Sum('annual_premium'))
         total_premium = float(premium_agg['total_premium_revenue'] or 0)
         total_claims_vol = float(claims_agg['total_claims_volume'] or 0)
-        # Actuarial Loss Ratio = (Incurred Claims / Earned Premium) * 100 with zero division protection
-        loss_ratio = round((total_claims_vol / total_premium) * 100, 2) if total_premium > 0 else 0.0
+        incurred_claims_vol = float(claims_agg['incurred_claims_volume'] or 0)
+        # Actuarial Loss Ratio = (Incurred Claims / Earned Premium) * 100 with zero division protection.
+        # The numerator is incurred volume (Rejected claims excluded), NOT gross submitted volume.
+        loss_ratio = round((incurred_claims_vol / total_premium) * 100, 2) if total_premium > 0 else 0.0
 
         lob_items = list(
             policies_qs.values('line_of_business').annotate(
@@ -101,7 +123,7 @@ class DashboardAnalyticsAPIView(APIView):
         lob_breakdown = []
         for item in lob_items:
             lob_name = item['line_of_business']
-            lob_claims = claims_qs.filter(policy__line_of_business=lob_name).aggregate(claims_vol=Sum('gross_amount'))['claims_vol'] or 0
+            lob_claims = claims_qs.filter(policy__line_of_business=lob_name).exclude(status='Rejected').aggregate(claims_vol=Sum('gross_amount'))['claims_vol'] or 0
             lob_prem = float(item['premium'] or 0)
             lob_lr = round((float(lob_claims) / lob_prem) * 100, 2) if lob_prem > 0 else 0.0
             lob_breakdown.append({
@@ -124,7 +146,14 @@ class DashboardAnalyticsAPIView(APIView):
                 'rejectedClaims': claims_agg['rejected_claims'] or 0,
                 'totalPremiumRevenue': total_premium,
                 'totalClaimsVolume': total_claims_vol,
+                'incurredClaimsVolume': incurred_claims_vol,
+                # Backward-compatible alias: approved recoveries only. Pending
+                # Review / SIU recoveries are estimates, never settled money.
                 'totalReinsuranceRecoveries': float(claims_agg['total_reinsurance_recoveries'] or 0),
+                'estimatedRecoveries': float(claims_agg['estimated_recoveries'] or 0),
+                'approvedRecoveries': float(claims_agg['approved_recoveries'] or 0),
+                'billedRecoveries': float(claims_agg['billed_recoveries'] or 0),
+                'collectedRecoveries': float(claims_agg['collected_recoveries'] or 0),
                 'lossRatio': loss_ratio,
                 'activeTreatiesCount': treaties_qs.filter(status='Active').count() if treaties_qs.filter(status='Active').exists() else treaties_qs.count(),
                 'portfolioByLob': lob_breakdown,

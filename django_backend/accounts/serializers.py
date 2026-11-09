@@ -65,6 +65,21 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         org_name = validated_data.pop('organization_name', 'InsureSphere Global Syndicate')
         password = validated_data.pop('password')
 
+        # Privilege-escalation guard: this endpoint is AllowAny, so a
+        # client-supplied role must never be honoured for anonymous callers —
+        # otherwise anyone could self-register as Admin. Public registration
+        # ALWAYS creates a Customer. Only an already-authenticated Admin
+        # creating an account through this endpoint may set Admin/Agent.
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        request_user = getattr(request, 'user', None)
+        is_admin_creator = bool(
+            request_user is not None
+            and getattr(request_user, 'is_authenticated', False)
+            and getattr(request_user, 'role', None) == User.Role.ADMIN
+        )
+        if not is_admin_creator:
+            validated_data['role'] = User.Role.CUSTOMER
+
         organization, _ = Organization.objects.get_or_create(
             slug=org_name.lower().replace(' ', '-')[:75],
             defaults={

@@ -16,6 +16,16 @@ class Claim(models.Model):
         REJECTED = 'Rejected', 'Rejected'
         SIU = 'SIU Investigation', 'SIU Investigation'
 
+    class RecoveryStage(models.TextChoices):
+        """Reinsurance recovery lifecycle. ``reinsurance_recovery`` is only an
+        *estimate* until a claim is approved; money moves through the stages
+        Estimated -> Approved -> Billed -> Collected. Approval alone never
+        means the recovery has been billed or collected."""
+        ESTIMATED = 'Estimated', 'Estimated'
+        APPROVED = 'Approved', 'Approved'
+        BILLED = 'Billed', 'Billed'
+        COLLECTED = 'Collected', 'Collected'
+
     claim_number = models.CharField(max_length=32, unique=True, db_index=True)
     organization = models.ForeignKey(
         Organization,
@@ -43,6 +53,13 @@ class Claim(models.Model):
     )
     deductible = models.DecimalField(max_digits=12, decimal_places=2, default=25000.00)
     reinsurance_recovery = models.DecimalField(max_digits=14, decimal_places=2, default=0.00)
+    recovery_stage = models.CharField(
+        max_length=20,
+        choices=RecoveryStage.choices,
+        default=RecoveryStage.ESTIMATED,
+    )
+    recovery_billed_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0.00)
+    recovery_collected_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0.00)
     status = models.CharField(
         max_length=30,
         choices=Status.choices,

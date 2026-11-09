@@ -307,6 +307,32 @@ export async function djangoCreateTreaty(payload) {
   return response.data;
 }
 
+export async function djangoUploadDocument(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await djangoApiClient.post('/ai/documents/', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+}
+
+export async function djangoFetchDocuments() {
+  const response = await djangoApiClient.get('/ai/documents/');
+  return response.data?.results || response.data;
+}
+
+export async function djangoDeleteDocument(id) {
+  await djangoApiClient.delete(`/ai/documents/${id}/`);
+  return true;
+}
+
+export async function djangoAskRag({ question, documentIds } = {}) {
+  const payload = { question };
+  if (documentIds !== undefined) payload.documentIds = documentIds;
+  const response = await djangoApiClient.post('/ai/ask/', payload);
+  return response.data;
+}
+
 export async function djangoFetchAnalytics(params = {}) {
   const query = {};
   if (params?.startDate) query.start_date = params.startDate;
@@ -492,5 +518,26 @@ export const DRF_ENDPOINT_CATALOG = [
     viewClass: 'AIDocumentAnalysisAPIView',
     permission: 'IsAuthenticated',
     description: 'Executes Google Gemini RAG & Claims Advisory pipeline (human-in-the-loop decision support).',
+  },
+  {
+    method: 'GET / POST',
+    endpoint: '/api/ai/documents/',
+    viewClass: 'AIDocumentViewSet',
+    permission: 'IsAuthenticated & IsOrganizationMember',
+    description: 'Lists organization-scoped RAG documents or uploads a PDF/DOCX/TXT/MD file for secure ingestion, text extraction, and chunking into PostgreSQL.',
+  },
+  {
+    method: 'DELETE',
+    endpoint: '/api/ai/documents/{id}/',
+    viewClass: 'AIDocumentViewSet.destroy',
+    permission: 'IsAuthenticated & IsOrganizationMember',
+    description: 'Deletes an organization-scoped RAG document and its stored chunks. Cross-tenant documents are not accessible.',
+  },
+  {
+    method: 'POST',
+    endpoint: '/api/ai/ask/',
+    viewClass: 'AIRagAskAPIView',
+    permission: 'IsAuthenticated',
+    description: 'Organization-scoped retrieval over uploaded documents, then grounded Gemini generation (or extractive fallback) with document citations. Returns no-evidence when retrieval finds nothing relevant.',
   },
 ];

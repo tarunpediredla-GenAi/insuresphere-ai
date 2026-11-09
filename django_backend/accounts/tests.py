@@ -89,4 +89,8 @@ class AccountsAuthenticationTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn('access', response.data)
-        self.assertEqual(response.data['user']['role'], 'Agent')
+        # Security fix (2026-11-09): public registration must never honour a
+        # client-supplied privileged role — unauthenticated sign-ups are
+        # always created as Customer. Only an authenticated Admin may create
+        # Agent/Admin accounts (covered in tests_registration_fix.py).
+        self.assertEqual(response.data['user']['role'], 'Customer')
