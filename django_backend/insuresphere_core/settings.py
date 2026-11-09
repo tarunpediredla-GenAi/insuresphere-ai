@@ -57,6 +57,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -115,8 +116,49 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# ---------------------------------------------------------------------------
+# Storage backends
+#
+# Static files are always served by WhiteNoise (compressed + manifest
+# hashed) so the app does not depend on the platform's static file server.
+#
+# Media (uploaded RAG documents) lives on local disk by default, which is
+# fine for local development but is EPHEMERAL on most PaaS hosts. Set
+# MEDIA_S3_BUCKET to switch uploads to a private S3-compatible bucket
+# (AWS S3, Cloudflare R2, MinIO, ...) with signed URLs:
+#   MEDIA_S3_BUCKET        bucket name (presence enables S3 storage)
+#   MEDIA_S3_REGION        bucket region (default: ap-south-1)
+#   MEDIA_S3_ENDPOINT_URL  custom endpoint for R2/MinIO (unset for AWS S3)
+#   MEDIA_S3_ACCESS_KEY    access key id
+#   MEDIA_S3_SECRET_KEY    secret access key
+# ---------------------------------------------------------------------------
+MEDIA_S3_BUCKET = os.getenv('MEDIA_S3_BUCKET')
+
+if MEDIA_S3_BUCKET:
+    _default_storage_backend = 'storages.backends.s3boto3.S3Boto3Storage'
+    AWS_STORAGE_BUCKET_NAME = MEDIA_S3_BUCKET
+    AWS_S3_REGION_NAME = os.getenv('MEDIA_S3_REGION', 'ap-south-1')
+    AWS_S3_ENDPOINT_URL = os.getenv('MEDIA_S3_ENDPOINT_URL') or None
+    AWS_ACCESS_KEY_ID = os.getenv('MEDIA_S3_ACCESS_KEY')
+    AWS_SECRET_ACCESS_KEY = os.getenv('MEDIA_S3_SECRET_KEY')
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = True  # private bucket: serve via signed URLs
+else:
+    _default_storage_backend = 'django.core.files.storage.FileSystemStorage'
+
+STORAGES = {
+    'default': {
+        'BACKEND': _default_storage_backend,
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -140,7 +182,11 @@ REST_FRAMEWORK = {
 
 # SimpleJWT Configuration
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=2),
+    # Short-lived access tokens (default 30 min, override with
+    # JWT_ACCESS_TOKEN_MINUTES). The silent HttpOnly refresh-cookie flow
+    # (rotation + blacklist below) renews them without user interaction,
+    # so a short lifetime costs no UX and shrinks the token-theft window.
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=int(os.getenv('JWT_ACCESS_TOKEN_MINUTES', '30'))),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,

@@ -1,0 +1,1 @@
+{"$schema":"https://openapi.vercel.sh/vercel.json","buildCommand":"npm run build","framework":"vite","outputDirectory":"dist","rewrites":[{"destination":"https://REPLACE-WITH-RENDER-BACKEND-HOST/api/:path*","source":"/api/:path*"},{"destination":"/index.html","source":"/(.*)"}]}
